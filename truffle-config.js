@@ -4,11 +4,11 @@ const web3 = new Web3();
 const HDWalletProvider = require('@truffle/hdwallet-provider');
 const NonceTrackerSubprovider = require('web3-provider-engine/subproviders/nonce-tracker');
 const env = 'dev';
-const infuraKey = 'ef06f7345ff54c2d90aa91310d3a1fa9';
+const infuraKey = '';
 const mnemonic =
   env === 'dev'
-    ? '7bd88db8482d6f6b11d796d553b032bcb0e3cfa88b263496b62dd770e17e5628'
-    : '7bd88db8482d6f6b11d796d553b032bcb0e3cfa88b263496b62dd770e17e5628';
+    ? ''
+    : '';
 
 module.exports = {
   // See <http://truffleframework.com/docs/advanced/configuration>
