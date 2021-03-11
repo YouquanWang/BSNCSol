@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>测试</title>
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="col-sm-6 col-sm-push-3 col-md-4 col-md-push-4">
+          <div class="panel panel-default">
+            <div class="panel-body">
+              <input type="text" class="form-control" id="investAddress" placeholder="Address" />
+              <input type="text" class="form-control" id="investAmount" placeholder="Amount" />
+              <button class="btn btn-primary" id="investButton" type="button">投资</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-sm-6 col-sm-push-3 col-md-4 col-md-push-4">
+          <div class="panel panel-default">
+            <div class="panel-body">
+              <input type="text" class="form-control" id="withdrawalAmount" placeholder="Amount" />
+              <button class="btn btn-primary" id="withdrawalButton" type="button">提现</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-sm-6 col-sm-push-3 col-md-4 col-md-push-4">
+          <div class="panel panel-default">
+            <div class="panel-body">
+              <input type="text" class="form-control" id="allowAccessAddress" placeholder="Address" />
+              <button class="btn btn-primary" id="allowButton" type="button">设置调用权限</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-sm-6 col-sm-push-3 col-md-4 col-md-push-4">
+          <div class="panel panel-default">
+            <div class="panel-body">
+              <input type="text" class="form-control" id="backTime" placeholder="time" />
+              <button class="btn btn-primary" id="backTimeButton" type="button">设置返回时间</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-sm-6 col-sm-push-3 col-md-4 col-md-push-4">
+          <div class="panel panel-default">
+            <div class="panel-body">
+              <input type="text" class="form-control" id="addDynamicAddress" placeholder="Address" />
+              <input type="text" class="form-control" id="addDynamicAmount" placeholder="Amount" />
+              <button class="btn btn-primary" id="addDynamicButton" type="button">增加动态收入</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- jQuery (necessary for Bootstrap's JavaScript plugins) -->
+    <script src="js/jquery.min.js"></script>
+    <script src="js/bootstrap.min.js"></script>
+    <script src="js/web3.min.js"></script>
+    <script src="js/bignumber.min.js"></script>
+    <script src="js/truffle-contract.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
