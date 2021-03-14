@@ -9,14 +9,18 @@ contract BSNData is Ownable {
   using SafeERC20 for IERC20;
   
   uint public orderId = 1;
-  uint public perDayBlock = 28800;
   uint public dayNum = 1;
   uint public curDayStartBlock;
   address pool;
+  uint public totalPool = 0;
+  uint public totalMarketWind = 0;
   address public windToken;
   uint marketToTalMoney;
   address public BUSD;
   uint public BUSDDecimals;
+  mapping(uint => mapping(uint => uint)) public dayMinuteNum;
+  mapping(address => mapping(uint => bool)) public isDividend;
+  mapping(uint => mapping(uint => uint)) public singleMarketInvest;
   // uint public tokenBethAddress = address('');
   // uint public tokenBusdAddress = address('');
    uint up = 1;
@@ -62,7 +66,11 @@ contract BSNData is Ownable {
   }
   mapping(uint => mapping(uint => BlockInfo)) blocks;
   mapping(uint => mapping(uint => bool)) blockIsInvests;
-  mapping(address => mapping(uint => uint)) userDayMarkets;
+  struct UserDayMarket{
+    uint amount;
+    bool isSet;
+  }
+  mapping(address => mapping(uint => UserDayMarket)) userDayMarkets;
   /* 
    * accessAllowed
    * 调用合约权限设置
@@ -148,8 +156,8 @@ contract BSNData is Ownable {
   function getBlockRecords(uint _block, uint _minute) public view returns(uint[] memory ids) {
     return blocks[_block][_minute].records;
   }
-  function getUserDayMarket (address _user, uint _dayNum) public view returns(uint _marketAmount) {
-    return userDayMarkets[_user][_dayNum];
+  function getUserDayMarket (address _user, uint _dayNum) public view returns(uint _marketAmount, bool _isSet) {
+    return (userDayMarkets[_user][_dayNum].amount, userDayMarkets[_user][_dayNum].isSet);
   }
   function getCurDayNum () external view returns(uint) {
     return dayNum;
@@ -181,6 +189,21 @@ contract BSNData is Ownable {
   function getCurDayStartBlock () external view returns(uint) {
     return curDayStartBlock;
   }
+  function getSingleMarketInvest(uint _minute, uint _dayNum) public view returns(uint _amount) {
+    return singleMarketInvest[_minute][_dayNum];
+  }
+  function setSingleMarketInvest(uint _minute, uint _dayNum, uint _amount) external platform {
+    singleMarketInvest[_minute][_dayNum] = _amount;
+  }
+  //  function setDayMinuteNum (address _user, uint _dayNum) external platform {
+
+  //  }
+   function getIsDividend(address _user, uint _dayNum) public view returns(bool isSet) {
+     return isDividend[_user][_dayNum];
+   }
+   function getDayMinuteNum(uint _dayNum, uint _minute) public view returns(uint _amount){
+     return  dayMinuteNum[_dayNum][_minute];
+   }
   function invest(
     address _investor,
     uint _investType,
@@ -231,6 +254,7 @@ contract BSNData is Ownable {
       recordIds.push(orderId);
       users[_investor].records.push(orderId);
       cycles[dayNum].totalInvest = cycles[dayNum].totalInvest.add(_investAmount);
+      dayMinuteNum[dayNum][_minute] = dayMinuteNum[dayNum][_minute].add(_investAmount);
     }
     // function _addUser (address _investor, address _intro) private {
     //   User memory _user = users[_investor];
@@ -247,6 +271,7 @@ contract BSNData is Ownable {
       cycles[dayNum].endBlock = _block;
       cycles[dayNum].isEnd = true;
       cycles[dayNum].windToken = _windToken;
+      totalMarketWind = totalMarketWind.add(_windToken);
       cycles[dayNum].marketToTalMoney = marketToTalMoney;
       // uint oldDay = dayNum;
       dayNum = dayNum.add(1);
@@ -259,6 +284,8 @@ contract BSNData is Ownable {
     function transferPool(uint _amount) external platform {
       require(IERC20(BUSD).balanceOf(address(this)) >= _amount);
       IERC20(BUSD).safeTransfer(pool, _amount);
+      totalPool = totalPool.add(_amount);
+
     }
     function win(uint _amount, address _user,uint _id) external platform {
       require(IERC20(BUSD).balanceOf(address(this)) >= _amount);
@@ -279,23 +306,26 @@ contract BSNData is Ownable {
       users[_user].marketProvide = users[_user].marketProvide.add(_amount);
       cycles[dayNum].marketAdd = cycles[dayNum].marketAdd.add(_amount);
       marketToTalMoney = marketToTalMoney.add(_amount);
-      userDayMarkets[_user][dayNum] = users[_user].marketProvide;
+      userDayMarkets[_user][dayNum].amount = users[_user].marketProvide;
+      userDayMarkets[_user][dayNum].isSet = true;
     }
     function withdrawPool (address _user, uint _amount) private{
       require(users[_user].isMarker);
       require(users[_user].marketProvide >= _amount);
       users[_user].marketProvide = users[_user].marketProvide.sub(_amount);
       marketToTalMoney = marketToTalMoney.sub(_amount);
-      userDayMarkets[_user][dayNum] = users[_user].marketProvide;
+      userDayMarkets[_user][dayNum].amount = users[_user].marketProvide;
+      userDayMarkets[_user][dayNum].isSet = true;
     }
    function withdrawPoolMoney (address _user, uint _amount, uint _trueAmount)  external platform  {
      withdrawPool(_user, _amount);
      IERC20(BUSD).safeTransfer(_user, _trueAmount);
    }
    function receiveDividends (address _user, uint amount, uint _dayNum, address _teamAddress, uint _teamAmount)  external platform  {
-     if (userDayMarkets[_user][_dayNum.add(1)] <= 0) {
-       userDayMarkets[_user][_dayNum.add(1)] = users[_user].marketProvide;
+     if (userDayMarkets[_user][_dayNum.add(1)].isSet) {
+       userDayMarkets[_user][_dayNum.add(1)].amount = users[_user].marketProvide;
      }
+     isDividend[_user][_dayNum] = true;
      if (_teamAmount > 0) {
        IERC20(windToken).safeTransfer(_teamAddress, _teamAmount);
      }

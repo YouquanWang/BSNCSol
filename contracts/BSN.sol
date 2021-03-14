@@ -66,12 +66,16 @@ interface IBSNInterface {
     uint marketAdd,
     uint dayMarketTotal
   );
-  function getUserDayMarket (address _user, uint _dayNum) external view returns(uint _marketAmount);
+  function getUserDayMarket (address _user, uint _dayNum) external view returns(uint _marketAmount, bool _isSet);
   function getCurDayStartBlock () external view returns(uint);
   function changeCycle(uint _block, uint _dayMarketTotal, uint _windToken) external;
   function transferPool(uint _amount) external;
   function getCurDayNum () external view returns(uint);
   function receiveDividends (address _user, uint amount, uint _dayNum, address _teamAddress, uint _teamAmount) external;
+  function getIsDividend(address _user, uint _dayNum) external view returns(bool isSet);
+  function getDayMinuteNum(uint _dayNum, uint _minute) external view returns(uint _amount);
+  function getSingleMarketInvest(uint _minute, uint _dayNum) external view returns(uint _amount);
+  function setSingleMarketInvest(uint _minute, uint _dayNum, uint _amount) external;
 }
 contract BSN is Ownable, ReentrancyGuard {
   using SafeMath for uint256;
@@ -84,6 +88,7 @@ contract BSN is Ownable, ReentrancyGuard {
   address teamAddress; // 团队收币地址
   uint public BUSDDecimals;
   uint public windTokenDecimals;
+  uint public dayBlockNum = 28800;
   address public BSNData; // 数据合约地址
   // uint public singleInvestAmount;
   uint[] public marketTypeIds;
@@ -92,7 +97,6 @@ contract BSN is Ownable, ReentrancyGuard {
     uint duration;
     uint minAmount;
     uint maxAmount;
-    mapping(uint => uint) singleMarketInvest;
     bool isExist;
   }
   address oracle;
@@ -104,9 +108,7 @@ contract BSN is Ownable, ReentrancyGuard {
   uint public failRate = 20;
   uint public successRate = 10;
   mapping(uint => MarketType) public marketTypes;
-  mapping(uint => mapping(uint => uint)) public dayMinuteNum;
   mapping (address => bool) private accessAllowed;
-  mapping(address => mapping(uint => bool)) public isDividend;
   event AccessAllowedAddress(address indexed _addr, bool _access);
   event SetPairAddress(address _BETH, address _BUSD);
   event SetFactoryAddress(address _old, address _new);
@@ -122,7 +124,8 @@ contract BSN is Ownable, ReentrancyGuard {
   event MarkerRedeem(address indexed _user, uint _amount, uint _trueAmount, uint _time, uint _block);
   event SetTeamAddress(address _old, address _new);
   event SetRate(uint _failRate, uint _successRate);
-  event ReceiveDividends(uint _dayNum, uint _canReceive, address _user);
+  event SetDayBlockNum(uint _old, uint _new);
+  event ReceiveDividends(uint _dayNum, uint _canReceive, address indexed _user);
   constructor (address _BSNData,address _oracle, address _factory, address _BETH, address _BUSD, address _windToken, address _teamAddress) public {
     BSNData = _BSNData;
     oracle = _oracle;
@@ -136,7 +139,7 @@ contract BSN is Ownable, ReentrancyGuard {
     // singleInvestAmount = 100 * (10 ** BUSDDecimals);
   }
   
-  /* 
+   /* 
    * 验证 accessAllowed 权限
   */   
   modifier platform() {
@@ -159,6 +162,10 @@ contract BSN is Ownable, ReentrancyGuard {
   function setHaveWinUsd (bool _have) onlyOwner public {
     emit SetHaveWinUsd(isHaveWinUsd, _have);
     isHaveWinUsd = _have;
+  }
+  function setDayBlockNum (uint _dayBlockNum) onlyOwner public {
+    emit SetDayBlockNum(dayBlockNum, _dayBlockNum);
+    dayBlockNum = _dayBlockNum;
   }
   function setPairAddress(address _BETH, address _BUSD) onlyOwner public {
     BETH = _BETH;
@@ -199,18 +206,17 @@ contract BSN is Ownable, ReentrancyGuard {
     windToken = _windToken;
     windTokenDecimals = IERC20(windToken).decimals();
   }
-  function addMarketType(uint _minute, uint _duration, uint _minAmount, uint _maxAmount, uint _singleMarketInvest) onlyOwner public{
+  function addMarketType(uint _minute, uint _duration, uint _minAmount, uint _maxAmount, uint _dayNum, uint _singleMarketInvest) onlyOwner public{
     require(_maxAmount > _minAmount);
     if (!marketTypes[_minute].isExist) {
       marketTypeIds.push(_minute);
       marketTypes[_minute].isExist = true;
     }
-    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
     marketTypes[_minute].minute = _minute;
     marketTypes[_minute].duration = _duration;
     marketTypes[_minute].minAmount = _minAmount.mul(10 ** BUSDDecimals);
     marketTypes[_minute].maxAmount = _maxAmount.mul(10 ** BUSDDecimals);
-    marketTypes[_minute].singleMarketInvest[dayNum] = _singleMarketInvest.mul(10 ** BUSDDecimals);
+    IBSNInterface(BSNData).setSingleMarketInvest(_minute, _dayNum, _singleMarketInvest.mul(10 ** BUSDDecimals));
   }
   function invest(uint _investType, uint _minute, uint _investAmount) public nonReentrant {
     require(marketTypes[_minute].isExist);
@@ -224,8 +230,6 @@ contract BSN is Ownable, ReentrancyGuard {
     changeCycle(block.number);
     // require(_investAmount <= marketTypes[_minute].minute.mul(singleInvestAmount));
     IERC20(BUSD).safeTransferFrom(msg.sender, BSNData, _investAmount);
-    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
-    dayMinuteNum[dayNum][_minute] = dayMinuteNum[dayNum][_minute].add(_investAmount);
     uint price = getEthUsd();
     uint openBlock = marketTypes[_minute].duration.add(block.number);
     IBSNInterface(BSNData).invest(msg.sender, uint(_investType), _minute, _investAmount, block.number, block.timestamp, openBlock ,price);
@@ -233,16 +237,18 @@ contract BSN is Ownable, ReentrancyGuard {
   }
   function changeCycle (uint _block) private {
     uint curBlock = IBSNInterface(BSNData).getCurDayStartBlock();
-    if (_block >= curBlock.add(28800)) {
+    if (_block >= curBlock.add(dayBlockNum)) {
       (uint curDayAmount, uint marketInvest) = getCurCycleIncome();
       uint dayNum = IBSNInterface(BSNData).getCurDayNum();
       for(uint i = 0; i < marketTypeIds.length; i++) {
-        uint total = dayMinuteNum[dayNum][marketTypeIds[i]];
-        if (total > marketTypes[marketTypeIds[i]].singleMarketInvest[dayNum].mul(24)){
-          marketTypes[marketTypeIds[i]].singleMarketInvest[dayNum.add(1)] = marketTypes[marketTypeIds[i]].singleMarketInvest[dayNum].add(10000 * (10 ** BUSDDecimals));
+        uint total = IBSNInterface(BSNData).getDayMinuteNum(dayNum, marketTypeIds[i]);
+        uint singleMarketInvest = IBSNInterface(BSNData).getSingleMarketInvest(marketTypeIds[i], dayNum);
+        IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest);
+        if (total > singleMarketInvest.mul(24)){
+          IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest.add(10000 * (10 ** BUSDDecimals)));
         }
         if (marketInvest > curDayAmount && marketInvest.sub(curDayAmount) > marketInvest.mul(5).div(100)) {
-          marketTypes[marketTypeIds[i]].singleMarketInvest[dayNum.add(1)] = marketTypes[marketTypeIds[i]].singleMarketInvest[dayNum].div(2);
+         IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest.div(2));
         }
       }
       uint _dayMarketTotal;
@@ -295,7 +301,7 @@ contract BSN is Ownable, ReentrancyGuard {
     (,uint investType,uint minute,uint _investAmount,uint investBlock,,uint openBlock,uint busdPerBeth,uint investDayNum,) = IBSNInterface(BSNData).getOrderById(_orderId);
     uint openBlockPrice = getBlockPrice(openBlock);
     (uint upTotal, uint downTotal) = getBlockUpAndDown(investBlock, minute);
-    uint singleMarketInvest = marketTypes[minute].singleMarketInvest[investDayNum];
+    uint singleMarketInvest = IBSNInterface(BSNData).getSingleMarketInvest(minute, investDayNum);
     uint investAmount = _investAmount;
     if (busdPerBeth == openBlockPrice) {
       back = investAmount;
@@ -334,7 +340,7 @@ contract BSN is Ownable, ReentrancyGuard {
      (uint curDayAmount, uint marketInvest) = getCurCycleIncome();
      uint trueAmount;
      if (curDayAmount < marketInvest) {
-      trueAmount = _amount.mul(marketInvest.sub(curDayAmount)).div(marketInvest);
+      trueAmount = _amount.sub(_amount.mul(marketInvest.sub(curDayAmount)).div(marketInvest));
      } else {
        trueAmount = _amount;
      }
@@ -345,29 +351,65 @@ contract BSN is Ownable, ReentrancyGuard {
   function receiveDividends (uint _dayNum) public nonReentrant {
     uint dayNum = IBSNInterface(BSNData).getCurDayNum();
     require(_dayNum < dayNum);
-    require(!isDividend[msg.sender][_dayNum]);
-    (,, uint marketProvide,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
-    require(marketProvide > 0);
-    uint dayMarketProvide = IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
+    require(_dayNum >= 1);
+    bool isSetDividend = IBSNInterface(BSNData).getIsDividend(msg.sender, _dayNum);
+    require(!isSetDividend);
+    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
+    if (!isSet) {
+      for (uint i = _dayNum; i >= 1; i--) {
+        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(msg.sender, i);
+        if (_isSet) {
+          dayMarketProvide = _dayMarketProvide;
+          break;
+        }
+      }
+    }
     require(dayMarketProvide > 0);
     (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
+    require(_marketToTalMoney > 0);
     uint canReceive = _windToken.mul(dayMarketProvide).div(_marketToTalMoney);
-    isDividend[msg.sender][_dayNum] = true;
     IBSNInterface(BSNData).receiveDividends(msg.sender, canReceive, _dayNum, teamAddress, 0);
     emit ReceiveDividends(_dayNum, canReceive, msg.sender);
+  }
+  function getDividends (uint _dayNum) public view returns(uint _amount) {
+    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
+    require(_dayNum < dayNum);
+    require(_dayNum >= 1);
+    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
+    if (!isSet) {
+      for (uint i = _dayNum; i >= 1; i--) {
+        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(msg.sender, i);
+        if (_isSet) {
+          dayMarketProvide = _dayMarketProvide;
+          break;
+        }
+      }
+    }
+    (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
+    uint canReceive = _marketToTalMoney > 0 ? _windToken.mul(dayMarketProvide).div(_marketToTalMoney) : 0;
+    return canReceive;
   }
   function giveDividends (address _user,uint _dayNum) public nonReentrant onlyOwner{
     uint dayNum = IBSNInterface(BSNData).getCurDayNum();
     require(_dayNum < dayNum);
-    require(!isDividend[_user][_dayNum]);
-    (,, uint marketProvide,) = IBSNInterface(BSNData).getUserInfo(_user);
-    require(marketProvide > 0);
-    uint dayMarketProvide = IBSNInterface(BSNData).getUserDayMarket(_user, _dayNum);
+    require(_dayNum >= 1);
+    bool isSetDividend = IBSNInterface(BSNData).getIsDividend(msg.sender, _dayNum);
+    require(!isSetDividend);
+    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(_user, _dayNum);
+    if (!isSet) {
+      for (uint i = _dayNum; i >= 1; i--) {
+        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(_user, i);
+        if (_isSet) {
+          dayMarketProvide = _dayMarketProvide;
+          break;
+        }
+      }
+    }
     require(dayMarketProvide > 0);
     (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
+    require(_marketToTalMoney > 0);
     uint canReceive = _windToken.mul(dayMarketProvide).div(_marketToTalMoney);
     uint teamReceive = canReceive.div(100);
-    isDividend[_user][_dayNum] = true;
     IBSNInterface(BSNData).receiveDividends(_user, canReceive.sub(teamReceive), _dayNum, teamAddress, teamReceive);
     emit ReceiveDividends(_dayNum, canReceive, _user);
   }

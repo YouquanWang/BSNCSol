@@ -1,5 +1,5 @@
-var Frozen = artifacts.require("./Frozen.sol");
+var BSN = artifacts.require("./Gold.sol");
 module.exports = function(deployer) {
-  deployer.deploy(Frozen).then((data) => {
+  deployer.deploy(BSN).then((data) => {
   })
 };
