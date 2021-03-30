@@ -24,6 +24,7 @@ interface IOracle {
 }
 interface IWindToken {
   function mint(address _to, uint256 _amount) external returns (bool);
+  function totalSupply() external view returns (uint256);
 }
 interface IBSNInterface {
   function invest(
@@ -34,7 +35,8 @@ interface IBSNInterface {
     uint _investBlock,
     uint _investTime,
     uint _openBlock,
-    uint _busdPerBeth
+    uint _busdPerBeth,
+    address _intro
   ) external;
   function getMarketToTalMoney () external view returns(uint);
   function getOrderById (uint _id) external view returns (
@@ -49,26 +51,32 @@ interface IBSNInterface {
     uint dayNum,
     bool isOpen);
     function getBlockRecords(uint _block, uint _minute) external view returns(uint[] memory ids);
-    function win(uint _amount, address _user,uint _id) external;
-    function fail (uint _id) external;
+    function win(uint _amount, address _user,uint _id, uint _investAmount) external;
+    function fail (uint _id, uint _investAmount) external;
     function getUserInfo (address _user) external view returns(
     address userAddress,
     uint[] memory records,
     uint marketProvide,
-    bool isMarker
+    bool isMarker,
+    address intro,
+    uint reward
   );
-  function addPoolMoney (address _user, uint _amount) external;
-  function withdrawPoolMoney (address _user, uint _amount, uint _trueAmount)  external;
+  function addPoolMoney (address _user, uint _amount, address _intro) external;
+  function withdrawPoolMoney (address _user, uint _amount)  external returns(uint);
   function getCurCycleData (uint _dayNum) external view returns(
     uint windToken,
     uint totalInvest,
     uint totalPay,
     uint marketAdd,
-    uint dayMarketTotal
+    uint dayMarketTotal,
+    uint marketReduce,
+    uint poolAmount,
+    uint income,
+    uint reduce
   );
-  function getUserDayMarket (address _user, uint _dayNum) external view returns(uint _marketAmount, bool _isSet);
+  function getUserDayMarket (address _user, uint _dayNum) external view returns(uint _marketAmount, uint _trueAmount ,bool _isSet);
   function getCurDayStartBlock () external view returns(uint);
-  function changeCycle(uint _block, uint _dayMarketTotal, uint _windToken) external;
+  function changeCycle(uint _dayMarketTotal, uint _windToken) external;
   function transferPool(uint _amount) external;
   function getCurDayNum () external view returns(uint);
   function receiveDividends (address _user, uint amount, uint _dayNum, address _teamAddress, uint _teamAmount) external;
@@ -76,6 +84,16 @@ interface IBSNInterface {
   function getDayMinuteNum(uint _dayNum, uint _minute) external view returns(uint _amount);
   function getSingleMarketInvest(uint _minute, uint _dayNum) external view returns(uint _amount);
   function setSingleMarketInvest(uint _minute, uint _dayNum, uint _amount) external;
+  function getPoolAddress () external view returns(address[] memory _poolAddress);
+  function getProportion () external view returns(uint, uint);
+  function setUserReward (address _user, uint _amount) external;
+  function getPoolRatio () external view returns(uint ratio);
+  function getPoolInfo(address _poolAddress) external view returns (uint _ratio, bool _isAdd);
+  function getTotalMarketWind () external view returns(uint);
+}
+
+interface IStakeInterface {
+  function platformStake(uint256 amount, address _user) external;
 }
 contract BSN is Ownable, ReentrancyGuard {
   using SafeMath for uint256;
@@ -89,6 +107,7 @@ contract BSN is Ownable, ReentrancyGuard {
   uint public BUSDDecimals;
   uint public windTokenDecimals;
   uint public dayBlockNum = 28800;
+  bool isStop = false;
   address public BSNData; // 数据合约地址
   // uint public singleInvestAmount;
   uint[] public marketTypeIds;
@@ -100,16 +119,15 @@ contract BSN is Ownable, ReentrancyGuard {
     bool isExist;
   }
   address oracle;
-  uint up = 1;
-  uint down = 0;
+  uint constant up = 1;
+  uint constant down = 0;
   uint public addMarketMin;
   uint public addMarketMax;
   bool public isHaveWinUsd = false;
-  uint public failRate = 20;
-  uint public successRate = 10;
+  // uint public failRate = 20;
+  uint public successRate = 2;
+  uint public incomeRate = 90;
   mapping(uint => MarketType) public marketTypes;
-  mapping (address => bool) private accessAllowed;
-  event AccessAllowedAddress(address indexed _addr, bool _access);
   event SetPairAddress(address _BETH, address _BUSD);
   event SetFactoryAddress(address _old, address _new);
   event SetOracleAddress(address _old, address _new);
@@ -123,9 +141,12 @@ contract BSN is Ownable, ReentrancyGuard {
   event ShareBonus(uint _amount, uint _dayNum, uint _busdAmount);
   event MarkerRedeem(address indexed _user, uint _amount, uint _trueAmount, uint _time, uint _block);
   event SetTeamAddress(address _old, address _new);
-  event SetRate(uint _failRate, uint _successRate);
+  event SetRate(uint _old, uint _new);
   event SetDayBlockNum(uint _old, uint _new);
+  event SetIsStop(bool _old, bool _new);
+  event GetReward(address indexed _user, uint _windToken, uint _time);
   event ReceiveDividends(uint _dayNum, uint _canReceive, address indexed _user);
+  event SetIncomeRate(uint _old, uint _new);
   constructor (address _BSNData,address _oracle, address _factory, address _BETH, address _BUSD, address _windToken, address _teamAddress) public {
     BSNData = _BSNData;
     oracle = _oracle;
@@ -136,77 +157,75 @@ contract BSN is Ownable, ReentrancyGuard {
     BUSDDecimals = IERC20(BUSD).decimals();
     windToken = _windToken;
     windTokenDecimals = IERC20(windToken).decimals();
-    // singleInvestAmount = 100 * (10 ** BUSDDecimals);
+    addMarketMin = 1000 * (10 ** BUSDDecimals);
+    addMarketMax = 1000000 * (10 ** BUSDDecimals);
   }
   
-   /* 
-   * 验证 accessAllowed 权限
-  */   
-  modifier platform() {
-    require(accessAllowed[msg.sender] == true, 'no access');
-    _;
-  }
-   /* 添加 accessAllowed 权限
-  */ 
-  function allowAccess(address _addr) onlyOwner public {
-    accessAllowed[_addr] = true;
-    emit AccessAllowedAddress(_addr, true);
-  }
-   /* 
-   * 删除 accessAllowed 权限
-  */ 
-  function denyAccess(address _addr) onlyOwner public {
-    accessAllowed[_addr] = false;
-    emit AccessAllowedAddress(_addr, false);
-  }
-  function setHaveWinUsd (bool _have) onlyOwner public {
+  function setHaveWinUsd (bool _have) onlyOwner external {
     emit SetHaveWinUsd(isHaveWinUsd, _have);
     isHaveWinUsd = _have;
   }
-  function setDayBlockNum (uint _dayBlockNum) onlyOwner public {
+  function setIsStop (bool _stop) onlyOwner external {
+    emit SetIsStop(isStop, _stop);
+    isStop = _stop;
+  }
+  modifier stop () {
+    require(isStop == false, 'is stop');
+    _;
+  }
+  function setDayBlockNum (uint _dayBlockNum) onlyOwner external {
     emit SetDayBlockNum(dayBlockNum, _dayBlockNum);
     dayBlockNum = _dayBlockNum;
   }
-  function setPairAddress(address _BETH, address _BUSD) onlyOwner public {
+  function setPairAddress(address _BETH, address _BUSD) onlyOwner external {
     BETH = _BETH;
     BUSD = _BUSD;
     BUSDDecimals = IERC20(BUSD).decimals();
     // singleInvestAmount = 100 * (10 ** BUSDDecimals);
     emit SetPairAddress(BETH, BUSD);
   }
-  function setFactoryAddress(address _factory) onlyOwner public {
+  function setFactoryAddress(address _factory) onlyOwner external {
     emit SetFactoryAddress(factory, _factory);
     factory = _factory;
   }
-  function setTeamAddress(address _teamAddress) onlyOwner public {
+  function setTeamAddress(address _teamAddress) onlyOwner external {
     emit SetTeamAddress(teamAddress, _teamAddress);
     teamAddress = _teamAddress;
   }
-  function setOracleAddress(address _oracle) onlyOwner public {
+  function setOracleAddress(address _oracle) onlyOwner external {
     emit SetOracleAddress(oracle, _oracle);
     oracle = _oracle;
   }
-  function setBSNDataAddress(address _BSNData) onlyOwner public {
+  function setBSNDataAddress(address _BSNData) onlyOwner external {
     emit SetBSNDataAddress(BSNData, _BSNData);
     BSNData = _BSNData;
   }
-  function setAddMarketLimit(uint _min, uint _max) onlyOwner public {
+  function setAddMarketLimit(uint _min, uint _max) onlyOwner external {
     require(_max > _min);
     emit SetAddMarketLimit(_min, _max);
+
     addMarketMin = _min.mul(10 ** BUSDDecimals);
     addMarketMax = _max.mul(10 ** BUSDDecimals);
   }
-  function setRate(uint _failRate, uint _successRate) onlyOwner public {
-    emit SetRate(_failRate, _successRate);
-    failRate = _failRate;
+  // function setRate(uint _failRate, uint _successRate) onlyOwner external {
+  //   emit SetRate(_failRate, _successRate);
+  //   failRate = _failRate;
+  //   successRate = _successRate;
+  // }
+  function setRate(uint _successRate) onlyOwner external {
+    emit SetRate(successRate, _successRate);
     successRate = _successRate;
   }
-  function setWindTokenAddress(address _windToken) onlyOwner public {
+  function setIncomeRate(uint _incomeRate) onlyOwner external {
+    emit SetIncomeRate(incomeRate, _incomeRate);
+    incomeRate = _incomeRate;
+  }
+  function setWindTokenAddress(address _windToken) onlyOwner external {
     emit SetWindTokenAddress(windToken, _windToken);
     windToken = _windToken;
     windTokenDecimals = IERC20(windToken).decimals();
   }
-  function addMarketType(uint _minute, uint _duration, uint _minAmount, uint _maxAmount, uint _dayNum, uint _singleMarketInvest) onlyOwner public{
+  function addMarketType(uint _minute, uint _duration, uint _minAmount, uint _maxAmount, uint _dayNum, uint _singleMarketInvest) onlyOwner external{
     require(_maxAmount > _minAmount);
     if (!marketTypes[_minute].isExist) {
       marketTypeIds.push(_minute);
@@ -218,84 +237,107 @@ contract BSN is Ownable, ReentrancyGuard {
     marketTypes[_minute].maxAmount = _maxAmount.mul(10 ** BUSDDecimals);
     IBSNInterface(BSNData).setSingleMarketInvest(_minute, _dayNum, _singleMarketInvest.mul(10 ** BUSDDecimals));
   }
-  function invest(uint _investType, uint _minute, uint _investAmount) public nonReentrant {
+  function invest(uint _investType, uint _minute, uint _investAmount, address _intro) external stop nonReentrant {
     require(marketTypes[_minute].isExist);
     require(_investAmount >= marketTypes[_minute].minAmount);
     require(_investAmount <= marketTypes[_minute].maxAmount);
     require(_investType == up || _investType == down);
-    (uint curDayAmount, uint marketInvest) = getCurCycleIncome();
-    if (marketInvest > curDayAmount) {
-       require(marketInvest.sub(curDayAmount) < marketInvest.mul(10).div(100));
+    (uint curDayAmount,, uint curDayMarketTotal) = getCurCycleIncome();
+    if (curDayMarketTotal > curDayAmount) {
+       require(curDayMarketTotal.sub(curDayAmount) < curDayMarketTotal.mul(10).div(100));
     }
     changeCycle(block.number);
     // require(_investAmount <= marketTypes[_minute].minute.mul(singleInvestAmount));
     IERC20(BUSD).safeTransferFrom(msg.sender, BSNData, _investAmount);
     uint price = getEthUsd();
     uint openBlock = marketTypes[_minute].duration.add(block.number);
-    IBSNInterface(BSNData).invest(msg.sender, uint(_investType), _minute, _investAmount, block.number, block.timestamp, openBlock ,price);
+    IBSNInterface(BSNData).invest(msg.sender, uint(_investType), _minute, _investAmount, block.number, block.timestamp, openBlock ,price, _intro);
     emit Invest(msg.sender, block.number, openBlock);
   }
   function changeCycle (uint _block) private {
     uint curBlock = IBSNInterface(BSNData).getCurDayStartBlock();
     if (_block >= curBlock.add(dayBlockNum)) {
-      (uint curDayAmount, uint marketInvest) = getCurCycleIncome();
+      (uint curDayAmount, , uint curDayMarketTotal) = getCurCycleIncome();
       uint dayNum = IBSNInterface(BSNData).getCurDayNum();
       for(uint i = 0; i < marketTypeIds.length; i++) {
         uint total = IBSNInterface(BSNData).getDayMinuteNum(dayNum, marketTypeIds[i]);
         uint singleMarketInvest = IBSNInterface(BSNData).getSingleMarketInvest(marketTypeIds[i], dayNum);
         IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest);
         if (total > singleMarketInvest.mul(24)){
-          IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest.add(10000 * (10 ** BUSDDecimals)));
+          uint limitAmount = curDayMarketTotal.mul(20).div(100).div(marketTypeIds.length) > singleMarketInvest.add(5000 * (10 ** BUSDDecimals)) ? singleMarketInvest.add(5000 * (10 ** BUSDDecimals)) : curDayMarketTotal.mul(20).div(100).div(marketTypeIds.length);
+          IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), limitAmount);
         }
-        if (marketInvest > curDayAmount && marketInvest.sub(curDayAmount) > marketInvest.mul(5).div(100)) {
+        if (curDayMarketTotal > curDayAmount && curDayMarketTotal.sub(curDayAmount) > curDayMarketTotal.mul(5).div(100)) {
          IBSNInterface(BSNData).setSingleMarketInvest(marketTypeIds[i], dayNum.add(1), singleMarketInvest.div(2));
         }
       }
       uint _dayMarketTotal;
       uint amount;
       uint busdAmount;
-      if (curDayAmount < marketInvest) {
+      if (curDayAmount <= curDayMarketTotal) {
          _dayMarketTotal = curDayAmount;
-         amount = marketInvest.sub(curDayAmount);
+         amount = curDayMarketTotal.sub(curDayAmount).div(2);
       } else {
-        _dayMarketTotal = marketInvest;
-        amount = curDayAmount.sub(marketInvest);
-        if (amount > 0) {
-          IBSNInterface(BSNData).transferPool(amount);
-          busdAmount = amount;
-        }
+        _dayMarketTotal = curDayMarketTotal;
+        amount = curDayAmount.sub(_dayMarketTotal).div(2);
+        busdAmount = curDayAmount.sub(curDayMarketTotal);
+        IBSNInterface(BSNData).transferPool(busdAmount);
       }
-       if (dayNum <= 60) {
-          uint amountMarket = marketInvest.div(100);
+       if (dayNum <= 3) {
+          uint amountMarket = curDayMarketTotal.div(100);
           amount = amount > amountMarket ? amount : amountMarket;
        }
-       uint windTokenAmount = isHaveWinUsd ? amount.mul(getPerUSdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 10) : amount.mul(100).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
-       uint teamAmount = windTokenAmount.div(9);
+       uint windTokenAmount = isHaveWinUsd ? amount.mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 10) : amount.mul(100).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+       if (dayNum > 183) {
+         uint totalWindToken = IWindToken(windToken).totalSupply();
+         uint fission = dayNum.sub(183).div(90);
+         windTokenAmount = windTokenAmount > totalWindToken.div(100).div(2 ** fission) ? totalWindToken.div(100).div(2 ** fission) : windTokenAmount;
+       }
+       uint teamAmount = windTokenAmount.div(10);
        IWindToken(windToken).mint(teamAddress, teamAmount);
-       IWindToken(windToken).mint(BSNData, windTokenAmount.sub(teamAmount));
-      emit ShareBonus(windTokenAmount.sub(teamAmount), dayNum, busdAmount);
-      IBSNInterface(BSNData).changeCycle(_block, _dayMarketTotal, windTokenAmount.sub(teamAmount));
+       IWindToken(windToken).mint(BSNData, windTokenAmount);
+      emit ShareBonus(windTokenAmount, dayNum, busdAmount);
+      IBSNInterface(BSNData).changeCycle(_dayMarketTotal, windTokenAmount);
     }
   }
-  function openAward (uint _orderId) public nonReentrant {
-    (address investor,,,,,,uint openBlock,,,bool isOpen) = IBSNInterface(BSNData).getOrderById(_orderId);
+  function openAward (uint _orderId) external nonReentrant {
+    (address investor,,,uint investAmount,,,uint openBlock,,,bool isOpen) = IBSNInterface(BSNData).getOrderById(_orderId);
     require(msg.sender == investor);
     require(!isOpen);
     uint openBlockPrice = getBlockPrice(openBlock);
     require(openBlockPrice > 0);
     (uint back, uint winTokenAmount) = getWin(_orderId);
     if (back > 0) {
-      IBSNInterface(BSNData).win(back, msg.sender, _orderId);
+      IBSNInterface(BSNData).win(back, msg.sender, _orderId, investAmount);
     } else {
-      IBSNInterface(BSNData).fail(_orderId);
+      IBSNInterface(BSNData).fail(_orderId, investAmount);
     }
-    uint teamAmount = winTokenAmount.div(9);
+    uint teamAmount;
+    uint introAmount;
     if (winTokenAmount > 0) {
+      teamAmount = winTokenAmount.div(10);
+      (,,,,address intro, uint reward) = IBSNInterface(BSNData).getUserInfo(msg.sender);
+      uint dayNum = IBSNInterface(BSNData).getCurDayNum();
       IWindToken(windToken).mint(teamAddress, teamAmount);
-      IWindToken(windToken).mint(msg.sender, winTokenAmount.sub(teamAmount));
+      if (intro != address(0)) {
+        introAmount = winTokenAmount.div(100);
+        IBSNInterface(BSNData).setUserReward(intro,reward.add(introAmount));
+       }
+       if (dayNum <= 3) {
+         _stakePool(winTokenAmount.sub(introAmount), msg.sender);
+       } else {
+         IWindToken(windToken).mint(msg.sender, winTokenAmount.sub(introAmount)); 
+       }
     }
-    emit OpenAward(back, winTokenAmount.sub(teamAmount), _orderId, msg.sender);
+    emit OpenAward(back, winTokenAmount.sub(introAmount), _orderId, msg.sender);
     changeCycle(block.number);
+  }
+  function getReward () external nonReentrant {
+     (,,,,, uint reward) = IBSNInterface(BSNData).getUserInfo(msg.sender);
+     require(reward > 0);
+     IBSNInterface(BSNData).setUserReward(msg.sender,0);
+     IWindToken(windToken).mint(msg.sender, reward); 
+     emit GetReward(msg.sender, reward, block.timestamp);
   }
   function getWin (uint _orderId) public view returns(uint back, uint winTokenAmount){
     (,uint investType,uint minute,uint _investAmount,uint investBlock,,uint openBlock,uint busdPerBeth,uint investDayNum,) = IBSNInterface(BSNData).getOrderById(_orderId);
@@ -308,110 +350,65 @@ contract BSN is Ownable, ReentrancyGuard {
       winTokenAmount = 0;
     }
     if (investType == up && busdPerBeth > openBlockPrice) {
-       winTokenAmount = isHaveWinUsd ? investAmount.mul(failRate).mul(getPerUSdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(failRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+      //  winTokenAmount = isHaveWinUsd ? investAmount.mul(failRate).mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(failRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
        back = 0;
+       winTokenAmount= 0;
     }
     if (investType == up && busdPerBeth < openBlockPrice) {
-        back = investAmount.mul(downTotal.add(singleMarketInvest)).div(upTotal.add(singleMarketInvest)).mul(85).div(100).add(investAmount);
-        winTokenAmount = isHaveWinUsd ? investAmount.mul(successRate).mul(getPerUSdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(successRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+        back = investAmount.mul(downTotal.add(singleMarketInvest)).mul(incomeRate).div(upTotal.add(singleMarketInvest)).div(100).add(investAmount);
+        winTokenAmount = isHaveWinUsd ? investAmount.mul(successRate).mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(successRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
     }
     if(investType == down && busdPerBeth > openBlockPrice) {
-       back = investAmount.mul(upTotal.add(singleMarketInvest)).div(downTotal.add(singleMarketInvest)).mul(85).div(100).add(investAmount);
-       winTokenAmount = isHaveWinUsd ? investAmount.mul(successRate).mul(getPerUSdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(successRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+       back = investAmount.mul(upTotal.add(singleMarketInvest)).mul(incomeRate).div(downTotal.add(singleMarketInvest)).div(100).add(investAmount);
+       winTokenAmount = isHaveWinUsd ? investAmount.mul(successRate).mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(successRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
     }
     if(investType == down && busdPerBeth < openBlockPrice) {
-       winTokenAmount = isHaveWinUsd ? investAmount.mul(failRate).mul(getPerUSdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(failRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+      //  winTokenAmount = isHaveWinUsd ? investAmount.mul(failRate).mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 12) : investAmount.mul(failRate).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
+       winTokenAmount = 0;
        back = 0;
     }
   }
-  function addMarketPool(uint _amount) public nonReentrant {
+  function addMarketPool(uint _amount, address _intro) external nonReentrant {
     require(_amount >= addMarketMin);
     require(_amount <= addMarketMax);
     changeCycle(block.number);
     IERC20(BUSD).safeTransferFrom(msg.sender, BSNData, _amount);
-    IBSNInterface(BSNData).addPoolMoney(msg.sender,_amount);
+    IBSNInterface(BSNData).addPoolMoney(msg.sender,_amount,_intro);
     uint dayNum = IBSNInterface(BSNData).getCurDayNum();
     emit AddPoolMoney(msg.sender, _amount, dayNum, block.timestamp);
   }
-  function markerRedeem (uint _amount) public nonReentrant {
-    require(_amount >= addMarketMin);
-     (, , uint marketProvide,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
-     require(marketProvide >= _amount);
-     (uint curDayAmount, uint marketInvest) = getCurCycleIncome();
-     uint trueAmount;
-     if (curDayAmount < marketInvest) {
-      trueAmount = _amount.sub(_amount.mul(marketInvest.sub(curDayAmount)).div(marketInvest));
-     } else {
-       trueAmount = _amount;
-     }
-     IBSNInterface(BSNData).withdrawPoolMoney(msg.sender, _amount , trueAmount);
+  function markerRedeem (uint _amount) external nonReentrant {
+     require(_amount > 0);
+     uint trueAmount = IBSNInterface(BSNData).withdrawPoolMoney(msg.sender, _amount);
      changeCycle(block.number);
      emit MarkerRedeem(msg.sender, _amount, trueAmount, block.timestamp, block.number);
   }
-  function receiveDividends (uint _dayNum) public nonReentrant {
-    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
-    require(_dayNum < dayNum);
-    require(_dayNum >= 1);
+  function receiveDividends (uint _dayNum) external nonReentrant {
     bool isSetDividend = IBSNInterface(BSNData).getIsDividend(msg.sender, _dayNum);
     require(!isSetDividend);
-    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
-    if (!isSet) {
-      for (uint i = _dayNum; i >= 1; i--) {
-        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(msg.sender, i);
-        if (_isSet) {
-          dayMarketProvide = _dayMarketProvide;
-          break;
-        }
-      }
-    }
-    require(dayMarketProvide > 0);
-    (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
-    require(_marketToTalMoney > 0);
-    uint canReceive = _windToken.mul(dayMarketProvide).div(_marketToTalMoney);
-    IBSNInterface(BSNData).receiveDividends(msg.sender, canReceive, _dayNum, teamAddress, 0);
-    emit ReceiveDividends(_dayNum, canReceive, msg.sender);
+    uint _canReceive = getDividends(_dayNum);
+    
+    IBSNInterface(BSNData).receiveDividends(msg.sender, _canReceive, _dayNum, teamAddress, 0);
+    emit ReceiveDividends(_dayNum, _canReceive, msg.sender);
   }
-  function getDividends (uint _dayNum) public view returns(uint _amount) {
+  function getDividends (uint _dayNum) public view returns(uint canReceive) {
     uint dayNum = IBSNInterface(BSNData).getCurDayNum();
     require(_dayNum < dayNum);
     require(_dayNum >= 1);
-    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
+    (uint proportion, uint denominator) = IBSNInterface(BSNData).getProportion();
+    (uint dayMarketProvide,,bool isSet)= IBSNInterface(BSNData).getUserDayMarket(msg.sender, _dayNum);
     if (!isSet) {
       for (uint i = _dayNum; i >= 1; i--) {
-        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(msg.sender, i);
+        (uint _dayMarketProvide,,bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(msg.sender, i);
         if (_isSet) {
           dayMarketProvide = _dayMarketProvide;
           break;
         }
       }
     }
-    (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
-    uint canReceive = _marketToTalMoney > 0 ? _windToken.mul(dayMarketProvide).div(_marketToTalMoney) : 0;
-    return canReceive;
-  }
-  function giveDividends (address _user,uint _dayNum) public nonReentrant onlyOwner{
-    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
-    require(_dayNum < dayNum);
-    require(_dayNum >= 1);
-    bool isSetDividend = IBSNInterface(BSNData).getIsDividend(msg.sender, _dayNum);
-    require(!isSetDividend);
-    (uint dayMarketProvide, bool isSet)= IBSNInterface(BSNData).getUserDayMarket(_user, _dayNum);
-    if (!isSet) {
-      for (uint i = _dayNum; i >= 1; i--) {
-        (uint _dayMarketProvide, bool _isSet) = IBSNInterface(BSNData).getUserDayMarket(_user, i);
-        if (_isSet) {
-          dayMarketProvide = _dayMarketProvide;
-          break;
-        }
-      }
-    }
-    require(dayMarketProvide > 0);
-    (uint _windToken,,uint _marketToTalMoney,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
-    require(_marketToTalMoney > 0);
-    uint canReceive = _windToken.mul(dayMarketProvide).div(_marketToTalMoney);
-    uint teamReceive = canReceive.div(100);
-    IBSNInterface(BSNData).receiveDividends(_user, canReceive.sub(teamReceive), _dayNum, teamAddress, teamReceive);
-    emit ReceiveDividends(_dayNum, canReceive, _user);
+    dayMarketProvide = dayMarketProvide.mul(proportion).div(denominator);
+    (uint _windToken,,uint _marketToTalMoney,,,,,,) = IBSNInterface(BSNData).getCurCycleData(_dayNum);
+    canReceive = _marketToTalMoney > 0 ? _windToken.mul(dayMarketProvide).div(_marketToTalMoney) : 0;
   }
   function getEthUsd () public view returns(uint rate) {
     (address token0,) = UniswapV2Library.sortTokens(BETH, BUSD);
@@ -419,7 +416,7 @@ contract BSN is Ownable, ReentrancyGuard {
     (uint reserveA, uint reserveB) = BETH == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
     rate = reserveB.mul(10**10).div(reserveA);
   }
-  function getPerUSdtWind () public view returns(uint rate) {
+  function getPerUsdtWind () public view returns(uint rate) {
     (address token0,) = UniswapV2Library.sortTokens(BUSD, windToken);
     (uint reserve0, uint reserve1,) = IUniswapV2Pair(IUniswapV2Factory(factory).getPair(BUSD, windToken)).getReserves();
     (uint reserveA, uint reserveB) = BUSD == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
@@ -443,11 +440,23 @@ contract BSN is Ownable, ReentrancyGuard {
     uint _price = IOracle(oracle).getMarket(_block);
     return _price;
   }
-  function getCurCycleIncome ()  public view returns (uint curAmount, uint marketInvest){
-    curAmount = IERC20(BUSD).balanceOf(BSNData);
+  function getCurCycleIncome ()  public view returns (uint curAmount, uint marketInvest, uint curDayMarketTotal){
+    uint dayNum = IBSNInterface(BSNData).getCurDayNum();
+    (,,,uint marketAdd, uint dayMarketTotal, uint marketReduce,,uint income,uint reduce) = IBSNInterface(BSNData).getCurCycleData(dayNum);
     marketInvest = IBSNInterface(BSNData).getMarketToTalMoney();
+    curAmount = dayMarketTotal.add(income).add(marketAdd).sub(reduce).sub(marketReduce);
+    curDayMarketTotal = dayMarketTotal.add(marketAdd).sub(marketReduce);
   }
-  function getMarketTypeIds () public view returns(uint[] memory _marketTypeIds) {
+  function getMarketTypeIds () external view returns(uint[] memory _marketTypeIds) {
     return marketTypeIds;
+  }
+  function _stakePool (uint256 amount, address _user) private {
+    address[] memory poolAddress = IBSNInterface(BSNData).getPoolAddress();
+    uint ratio = IBSNInterface(BSNData).getPoolRatio();
+    for(uint i = 0; i<poolAddress.length; i++) {
+      (uint _ratio,) = IBSNInterface(BSNData).getPoolInfo(poolAddress[i]);
+      IStakeInterface(poolAddress[i]).platformStake(amount.mul(_ratio).div(ratio), _user);
+      IWindToken(windToken).mint(poolAddress[i], amount.mul(_ratio).div(ratio));
+    }
   }
 }
