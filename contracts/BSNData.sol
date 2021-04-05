@@ -52,12 +52,13 @@ contract BSNData is Ownable {
     address userAddress;
     address intro;
     uint[] records;
+    address[] children;
     uint marketProvide;
     uint back;
     bool isMarker;
     uint reward;
   }
-  mapping(address => User) users;
+  mapping(address => User) public users;
   struct Record{
     address investor;
     uint investType;
@@ -218,14 +219,16 @@ contract BSNData is Ownable {
     uint marketProvide,
     bool isMarker,
     address intro,
-    uint reward
+    uint reward,
+    address[] memory children
   ) {
     return (users[_user].userAddress,
     users[_user].records,
     users[_user].marketProvide,
     users[_user].isMarker,
     users[_user].intro,
-    users[_user].reward
+    users[_user].reward,
+    users[_user].children
     );
   }
   function getCurCycleData (uint _dayNum) external view returns(
@@ -290,8 +293,9 @@ contract BSNData is Ownable {
     if (users[_investor].userAddress == address(0)) {
       _addUser(_investor);
     }
-    if (_intro != address(0) && _intro != _investor && users[_investor].intro == address(0)) {
+    if (_intro != address(0) && _intro != _investor && users[_intro].intro != _investor && users[_investor].intro == address(0)) {
       users[_investor].intro = _intro;
+      users[_intro].children.push(_investor);
     }
     blockIsInvests[_investBlock][_minute] = true;
     _addBlock(_investBlock, _minute);
@@ -386,8 +390,9 @@ contract BSNData is Ownable {
       if (users[_user].userAddress == address(0)) {
         _addUser(_user);
       }
-      if (_intro != address(0) && _intro != _user && users[_user].intro == address(0)) {
+      if (_intro != address(0) && _intro != _user && users[_intro].intro != _user && users[_user].intro == address(0)) {
         users[_user].intro = _intro;
+        users[_intro].children.push(_user);
       }
       if (!users[_user].isMarker) {
         users[_user].isMarker = true;
@@ -435,19 +440,20 @@ contract BSNData is Ownable {
       uint trueAmount;
       UserDayMarket memory tomorrow = userDayMarkets[_user][dayNum.add(1)];
       if (tomorrow.isSet && _amount <= tomorrow.trueAmount) {
-        tomorrow.amount = tomorrow.amount.sub(_amount.mul(denominator).div(proportion));
+        tomorrow.amount = tomorrow.amount > _amount.mul(denominator).div(proportion) ? tomorrow.amount.sub(_amount.mul(denominator).div(proportion)) : 0;
         tomorrow.trueAmount = tomorrow.trueAmount.sub(_amount);
         cycles[dayNum.add(1)].marketAdd = cycles[dayNum.add(1)].marketAdd.sub(_amount);
-        users[_user].marketProvide = users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion));
+        users[_user].marketProvide = users[_user].marketProvide > _amount.mul(denominator).div(proportion) ? users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion)) : 0;
         trueAmount = _amount;
         IERC20(BUSD).safeTransfer(_user, _amount);
       } else if (tomorrow.isSet && _amount > tomorrow.trueAmount) {
         tomorrow.amount = tomorrow.amount.sub(tomorrow.trueAmount.mul(denominator).div(proportion));
         uint rest = _amount.sub(tomorrow.trueAmount);
         cycles[dayNum.add(1)].marketAdd = cycles[dayNum.add(1)].marketAdd.sub(tomorrow.trueAmount);
-        users[_user].marketProvide = users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion));
-        userDayMarkets[_user][dayNum].amount = userDayMarkets[_user][dayNum].amount.sub(rest.mul(denominator).div(proportion));
+        users[_user].marketProvide = users[_user].marketProvide > _amount.mul(denominator).div(proportion) ? users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion)) : 0;
+        userDayMarkets[_user][dayNum].amount = userDayMarkets[_user][dayNum].amount > rest.mul(denominator).div(proportion) ? userDayMarkets[_user][dayNum].amount.sub(rest.mul(denominator).div(proportion)) : 0;
         (uint curAmount, uint curDayMarketTotal) = getCurCycleIncome();
+        cycles[dayNum].marketReduce = cycles[dayNum].marketReduce.add(rest);
         if(curDayMarketTotal > curAmount) {
           uint _rest = rest.mul(curAmount).div(curDayMarketTotal);
           cycles[dayNum].income = cycles[dayNum].income.add(rest.sub(_rest));
@@ -455,11 +461,10 @@ contract BSNData is Ownable {
         }
         trueAmount = rest.add(tomorrow.trueAmount);
         tomorrow.trueAmount = 0;
-        cycles[dayNum].marketReduce = cycles[dayNum].marketReduce.add(rest);
         IERC20(BUSD).safeTransfer(_user, trueAmount);
       } else {
-        users[_user].marketProvide = users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion));
-        userDayMarkets[_user][dayNum].amount = userDayMarkets[_user][dayNum].amount.sub(_amount.mul(denominator).div(proportion));
+        users[_user].marketProvide = users[_user].marketProvide > _amount.mul(denominator).div(proportion) ? users[_user].marketProvide.sub(_amount.mul(denominator).div(proportion)) : 0;
+        userDayMarkets[_user][dayNum].amount = users[_user].marketProvide;
         userDayMarkets[_user][dayNum].isSet = true;
         (uint curAmount, uint curDayMarketTotal) = getCurCycleIncome();
         trueAmount = _amount;

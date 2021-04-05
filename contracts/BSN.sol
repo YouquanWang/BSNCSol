@@ -58,7 +58,8 @@ interface IBSNInterface {
     uint marketProvide,
     bool isMarker,
     address intro,
-    uint reward
+    uint reward,
+    address[] memory children
   );
   function addPoolMoney (address _user, uint _amount, address _intro) external returns(bool);
   function withdrawPoolMoney (address _user, uint _amount)  external returns(uint);
@@ -148,6 +149,7 @@ contract BSN is Ownable, ReentrancyGuard {
   event GetReward(address indexed _user, uint _windToken, uint _time);
   event ReceiveDividends(uint _dayNum, uint _canReceive, address indexed _user);
   event SetIncomeRate(uint _old, uint _new);
+  event SetUserReward(address indexed _user, address indexed _intro, uint _introAmount, uint _time);
   constructor (address _BSNData,address _oracle, address _factory, address _BETH, address _BUSD, address _windToken, address _teamAddress) public {
     BSNData = _BSNData;
     oracle = _oracle;
@@ -318,11 +320,12 @@ contract BSN is Ownable, ReentrancyGuard {
     uint teamAmount = 0;
     uint introAmount = 0;
     if (winTokenAmount > 0) {
-      (,,,,address intro, uint reward) = IBSNInterface(BSNData).getUserInfo(msg.sender);
+      (,,,,address intro, uint reward,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
       uint dayNum = IBSNInterface(BSNData).getCurDayNum();
       if (intro != address(0)) {
         introAmount = winTokenAmount.div(2);
         IBSNInterface(BSNData).setUserReward(intro,reward.add(introAmount));
+        emit SetUserReward(msg.sender, intro, introAmount, block.timestamp);
        }
        teamAmount = (winTokenAmount.add(introAmount)).div(9);
        IWindToken(windToken).mint(teamAddress, teamAmount);
@@ -336,7 +339,7 @@ contract BSN is Ownable, ReentrancyGuard {
     changeCycle(block.number);
   }
   function getReward () external nonReentrant {
-     (,,,,, uint reward) = IBSNInterface(BSNData).getUserInfo(msg.sender);
+     (,,,,, uint reward,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
      require(reward > 0);
      IBSNInterface(BSNData).setUserReward(msg.sender,0);
      IWindToken(windToken).mint(msg.sender, reward); 
