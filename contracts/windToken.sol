@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: SimPL-2.0
 pragma solidity ^0.6.9;
 
 
@@ -1128,9 +1129,9 @@ abstract contract DelegateERC20 is ERC20 {
         );
 
         address signatory = ecrecover(digest, v, r, s);
-        require(signatory != address(0), "KisToken::delegateBySig: invalid signature");
-        require(nonce == nonces[signatory]++, "KisToken::delegateBySig: invalid nonce");
-        require(now <= expiry, "KisToken::delegateBySig: signature expired");
+        require(signatory != address(0), "BSCToken::delegateBySig: invalid signature");
+        require(nonce == nonces[signatory]++, "BSCToken::delegateBySig: invalid nonce");
+        require(now <= expiry, "BSCToken::delegateBySig: signature expired");
         return _delegate(signatory, delegatee);
     }
 
@@ -1160,7 +1161,7 @@ abstract contract DelegateERC20 is ERC20 {
     view
     returns (uint256)
     {
-        require(blockNumber < block.number, "KisToken::getPriorVotes: not yet determined");
+        require(blockNumber < block.number, "BSCToken::getPriorVotes: not yet determined");
 
         uint32 nCheckpoints = numCheckpoints[account];
         if (nCheckpoints == 0) {
@@ -1233,7 +1234,7 @@ abstract contract DelegateERC20 is ERC20 {
     )
     internal
     {
-        uint32 blockNumber = safe32(block.number, "KisToken::_writeCheckpoint: block number exceeds 32 bits");
+        uint32 blockNumber = safe32(block.number, "BSCToken::_writeCheckpoint: block number exceeds 32 bits");
 
         if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
             checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
@@ -1279,12 +1280,12 @@ contract WindToken is DelegateERC20, Ownable {
     }
 
     function addMinter(address _addMinter) public onlyOwner returns (bool) {
-        require(_addMinter != address(0), "KisToken: _addMinter is the zero address");
+        require(_addMinter != address(0), "BSCToken: _addMinter is the zero address");
         return EnumerableSet.add(_minters, _addMinter);
     }
 
     function delMinter(address _delMinter) public onlyOwner returns (bool) {
-        require(_delMinter != address(0), "KisToken: _delMinter is the zero address");
+        require(_delMinter != address(0), "BSCToken: _delMinter is the zero address");
         return EnumerableSet.remove(_minters, _delMinter);
     }
 
@@ -1297,7 +1298,7 @@ contract WindToken is DelegateERC20, Ownable {
     }
 
     function getMinter(uint256 _index) public view onlyOwner returns (address){
-        require(_index <= getMinterLength() - 1, "KisToken: index out of bounds");
+        require(_index <= getMinterLength() - 1, "BSCToken: index out of bounds");
         return EnumerableSet.at(_minters, _index);
     }
 

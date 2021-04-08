@@ -87,7 +87,7 @@ interface IBSNInterface {
   function setSingleMarketInvest(uint _minute, uint _dayNum, uint _amount) external;
   function getPoolAddress () external view returns(address[] memory _poolAddress);
   function getProportion () external view returns(uint, uint);
-  function setUserReward (address _user, uint _amount) external;
+  function setUserReward (address _intro, uint _amount, address _user) external;
   function getPoolRatio () external view returns(uint ratio);
   function getPoolInfo(address _poolAddress) external view returns (uint _ratio, bool _isAdd);
   function getTotalMarketWind () external view returns(uint);
@@ -109,6 +109,7 @@ contract BSN is Ownable, ReentrancyGuard {
   uint public BUSDDecimals;
   uint public windTokenDecimals;
   uint public dayBlockNum = 28800;
+  uint public longTail = 183;
   bool isStop = false;
   address public BSNData; // 数据合约地址
   // uint public singleInvestAmount;
@@ -144,12 +145,12 @@ contract BSN is Ownable, ReentrancyGuard {
   event MarkerRedeem(address indexed _user, uint _amount, uint _trueAmount, uint _time, uint _block);
   event SetTeamAddress(address _old, address _new);
   event SetRate(uint _old, uint _new);
+  event SetLongTail(uint _old, uint _new);
   event SetDayBlockNum(uint _old, uint _new);
   event SetIsStop(bool _old, bool _new);
   event GetReward(address indexed _user, uint _windToken, uint _time);
   event ReceiveDividends(uint _dayNum, uint _canReceive, address indexed _user);
   event SetIncomeRate(uint _old, uint _new);
-  event SetUserReward(address indexed _user, address indexed _intro, uint _introAmount, uint _time);
   constructor (address _BSNData,address _oracle, address _factory, address _BETH, address _BUSD, address _windToken, address _teamAddress) public {
     BSNData = _BSNData;
     oracle = _oracle;
@@ -210,11 +211,10 @@ contract BSN is Ownable, ReentrancyGuard {
     addMarketMin = _min.mul(10 ** BUSDDecimals);
     addMarketMax = _max.mul(10 ** BUSDDecimals);
   }
-  // function setRate(uint _failRate, uint _successRate) onlyOwner external {
-  //   emit SetRate(_failRate, _successRate);
-  //   failRate = _failRate;
-  //   successRate = _successRate;
-  // }
+  function setLongTail(uint _longTail) onlyOwner external {
+    emit SetLongTail(longTail, _longTail);
+    longTail = _longTail;
+  }
   function setRate(uint _successRate) onlyOwner external {
     emit SetRate(successRate, _successRate);
     successRate = _successRate;
@@ -245,6 +245,7 @@ contract BSN is Ownable, ReentrancyGuard {
     require(_investAmount >= marketTypes[_minute].minAmount);
     require(_investAmount <= marketTypes[_minute].maxAmount);
     require(_investType == up || _investType == down);
+    require(IERC20(BUSD).balanceOf(msg.sender) >= _investAmount);
     (uint curDayAmount, uint curDayMarketTotal) = getCurCycleIncome();
     if (curDayMarketTotal > curDayAmount) {
        require(curDayMarketTotal.sub(curDayAmount) < curDayMarketTotal.mul(10).div(100));
@@ -293,9 +294,9 @@ contract BSN is Ownable, ReentrancyGuard {
           amount = amount > amountMarket ? amount : amountMarket;
        }
        uint windTokenAmount = isHaveWinUsd ? amount.mul(getPerUsdtWind()).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals).div(10 ** 10) : amount.mul(100).mul(10 ** windTokenDecimals).div(10 ** BUSDDecimals);
-       if (dayNum > 183) {
+       if (dayNum > longTail) {
          uint totalWindToken = IWindToken(windToken).totalSupply();
-         uint fission = dayNum.sub(183).div(90);
+         uint fission = dayNum.sub(longTail).div(90);
          windTokenAmount = windTokenAmount > totalWindToken.div(100).div(2 ** fission) ? totalWindToken.div(100).div(2 ** fission) : windTokenAmount;
        }
        uint teamAmount = windTokenAmount.div(9);
@@ -320,12 +321,12 @@ contract BSN is Ownable, ReentrancyGuard {
     uint teamAmount = 0;
     uint introAmount = 0;
     if (winTokenAmount > 0) {
-      (,,,,address intro, uint reward,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
+      (,,,,address intro,,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
       uint dayNum = IBSNInterface(BSNData).getCurDayNum();
       if (intro != address(0)) {
+        (,,,,,uint introReward,) = IBSNInterface(BSNData).getUserInfo(intro);
         introAmount = winTokenAmount.div(2);
-        IBSNInterface(BSNData).setUserReward(intro,reward.add(introAmount));
-        emit SetUserReward(msg.sender, intro, introAmount, block.timestamp);
+        IBSNInterface(BSNData).setUserReward(intro, introReward.add(introAmount), msg.sender);
        }
        teamAmount = (winTokenAmount.add(introAmount)).div(9);
        IWindToken(windToken).mint(teamAddress, teamAmount);
@@ -341,7 +342,7 @@ contract BSN is Ownable, ReentrancyGuard {
   function getReward () external nonReentrant {
      (,,,,, uint reward,) = IBSNInterface(BSNData).getUserInfo(msg.sender);
      require(reward > 0);
-     IBSNInterface(BSNData).setUserReward(msg.sender,0);
+     IBSNInterface(BSNData).setUserReward(msg.sender,0, address(0));
      IWindToken(windToken).mint(msg.sender, reward); 
      emit GetReward(msg.sender, reward, block.timestamp);
   }

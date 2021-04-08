@@ -98,6 +98,7 @@ contract BSNData is Ownable {
   event SetBUSDAddress(address _old, address _new);
   event SetPool(address _old, uint _ratio);
   event SetWindTokenAddress(address _old, address _new);
+  event SetUserReward(address indexed _user, address indexed _intro, uint _introAmount, uint _time);
   constructor (address _BUSD, address _windToken, uint firstAmount) public {
     curDayStartBlock = block.number;
     BUSD = _BUSD;
@@ -210,8 +211,11 @@ contract BSNData is Ownable {
   function getAllrecord () external view returns(uint[] memory _recordIds){
     return recordIds;
   }
-  function setUserReward (address _user, uint _amount) external platform {
-    users[_user].reward = _amount;
+  function setUserReward (address _intro, uint _amount, address _user) external platform {
+    if (_user != address(0)) {
+      emit SetUserReward(_user, _intro, _amount.sub(users[_intro].reward), block.timestamp);
+    }
+    users[_intro].reward = _amount;
   }
   function getUserInfo (address _user) external view returns(
     address userAddress,

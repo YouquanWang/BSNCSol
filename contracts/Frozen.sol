@@ -11,6 +11,7 @@ contract Frozen is Ownable, ReentrancyGuard {
 
   address public BUSD;
   address public windToken;
+  bool public isOpen = false;
   uint public lastBlance;
   uint public haveTakeAmount;
   uint256 public rewardPerTokenStored;
@@ -30,7 +31,33 @@ contract Frozen is Ownable, ReentrancyGuard {
     BUSD = _BUSD;
     windToken = _windToken;
   }
-
+  /* 
+   * 验证 accessAllowed 权限
+  */   
+  modifier platform() {
+    require(accessAllowed[msg.sender] == true, 'no access');
+    _;
+  }
+ modifier Open() {
+    require(isOpen == true, 'no isOpen');
+    _;
+  }
+   /* 添加 accessAllowed 权限
+  */ 
+  function allowAccess(address _addr) onlyOwner public {
+    accessAllowed[_addr] = true;
+    emit AccessAllowedAddress(_addr, true);
+  }
+  function setOpen() platform public {
+     isOpen = true;
+  }
+   /* 
+   * 删除 accessAllowed 权限
+  */ 
+  function denyAccess(address _addr) onlyOwner public {
+    accessAllowed[_addr] = false;
+    emit AccessAllowedAddress(_addr, false);
+  }
    function setWindTokenAddress(address _windToken) onlyOwner public {
     emit SetWindTokenAddress(windToken, _windToken);
     windToken = _windToken;
@@ -63,15 +90,19 @@ contract Frozen is Ownable, ReentrancyGuard {
         return _balances[account].mul(rewardPerToken().sub(userRewardPerTokenPaid[account])).div(1e18).add(rewards[account]);
     }
 
-    function stake(uint256 amount) external nonReentrant updateReward(msg.sender) {
+    function stake(uint256 amount) external nonReentrant Open updateReward(msg.sender) {
         require(amount > 0, "Cannot stake 0");
         _totalSupply = _totalSupply.add(amount);
         _balances[msg.sender] = _balances[msg.sender].add(amount);
         IERC20(windToken).safeTransferFrom(msg.sender, address(this), amount);
         emit FreezeToken(msg.sender, amount, block.timestamp);
     }
-
-    function withdraw(uint256 amount) public nonReentrant updateReward(msg.sender) {
+    function platformStake(uint256 amount, address _user) external platform nonReentrant updateReward(_user) {
+        _totalSupply = _totalSupply.add(amount);
+        _balances[_user] = _balances[_user].add(amount);
+        emit FreezeToken(_user, amount, block.timestamp);
+    }
+    function withdraw(uint256 amount) public nonReentrant Open updateReward(msg.sender) {
         require(amount > 0, "Cannot withdraw 0");
         _totalSupply = _totalSupply.sub(amount);
         _balances[msg.sender] = _balances[msg.sender].sub(amount);
@@ -79,7 +110,7 @@ contract Frozen is Ownable, ReentrancyGuard {
         emit WithdrawalWind(msg.sender, amount, block.timestamp);
     }
 
-    function getReward() public nonReentrant updateReward(msg.sender) {
+    function getReward() public nonReentrant Open updateReward(msg.sender) {
         uint256 reward = rewards[msg.sender];
         if (reward > 0) {
             rewards[msg.sender] = 0;
@@ -97,7 +128,7 @@ contract Frozen is Ownable, ReentrancyGuard {
         }
         _;
     }
-    function exit() external {
+    function exit() Open external {
         withdraw(_balances[msg.sender]);
         getReward();
     }
